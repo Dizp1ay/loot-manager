@@ -6,7 +6,7 @@ from aiogram import Bot, Dispatcher, Router
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from aiogram.filters import CommandStart
 
-BOT_TOKEN = "ВАШ_ТОКЕН_ОТ_BOTFATHER"
+BOT_TOKEN = "8752920626:AAFTkqldcmMOS1VhyI7ttaMLR2D3nmQkPc0"
 WEBAPP_URL = "https://your-cloudflare-tunnel.trycloudflare.com"
 
 bot = Bot(token=BOT_TOKEN)
