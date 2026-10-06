@@ -1,6 +1,0 @@
-fastapi
-uvicorn
-aiogram
-sqlalchemy
-pydantic
-import
