@@ -1,13 +1,17 @@
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from aiogram import Bot, Dispatcher, Router
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from aiogram.filters import CommandStart
 
 BOT_TOKEN = "8752920626:AAFTkqldcmMOS1VhyI7ttaMLR2D3nmQkPc0"
-WEBAPP_URL = "https://loot-manager-bot.onrender.com"
+# Ссылку подставим после создания сервиса на Render!
+WEBAPP_URL = "https://loot-manager-bot.onrender.com" 
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -23,7 +27,7 @@ async def start_cmd(message: Message):
             )
         ]]
     )
-    await message.answer("Привет! Нажми на кнопку ниже, чтобы открыть менеджер лута:", reply_markup=kb)
+    await message.answer("Привет! Нажми на кнопку ниже, чтобы открыть Лут-Менеджер:", reply_markup=kb)
 
 dp.include_router(router)
 
@@ -43,6 +47,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-async def root():
-    return {"status": "ok", "message": "Сервер работает!"}
+# Подключение собранных файлов React
+dist_path = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+
+if os.path.exists(dist_path):
+    app.mount("/assets", StaticFiles(directory=os.path.join(dist_path, "assets")), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_react(full_path: str):
+        return FileResponse(os.path.join(dist_path, "index.html"))
+else:
+    @app.get("/")
+    async def root():
+        return {"status": "ok", "message": "Фронтенд еще не собран!"}
