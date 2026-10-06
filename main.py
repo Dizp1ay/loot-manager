@@ -164,6 +164,15 @@ async def lifespan(app: FastAPI):
     yield
     polling_task.cancel()
     timer_task.cancel()
+  
+  @asynccontextmanager
+async def lifespan(app: FastAPI):
+    polling_task = asyncio.create_task(dp.start_polling(bot))
+    timer_task = asyncio.create_task(check_and_finish_rounds()) # Запуск таймера
+    yield
+    polling_task.cancel()
+    timer_task.cancel()
+
 
 # ==================== FASTAPI APP ====================
 
@@ -322,3 +331,40 @@ else:
     @app.get("/")
     async def root():
         return {"status": "ok", "message": "Бэкенд работает. Фронтенд еще не собран."}
+
+# Логика определения победителей
+async def check_and_finish_rounds():
+    while True:
+        await asyncio.sleep(10) # Проверка каждые 10 секунд
+        db = SessionLocal()
+        try:
+            now = datetime.utcnow()
+            expired_rounds = db.query(LootRoundDB).filter(
+                LootRoundDB.status == "active",
+                LootRoundDB.end_time <= now
+            ).all()
+
+            for rnd in expired_rounds:
+                rnd.status = "finished"
+                items = db.query(ItemDB).filter(ItemDB.round_id == rnd.id).all()
+                
+                results_msg = "<b>🏆 Итоги распределения лута:</b>\n\n"
+
+                for item in items:
+                    # Находим заявку с максимальным роллом
+                    top_bid = db.query(BidDB).filter(BidDB.item_id == item.id).order_by(BidDB.roll_result.desc()).first()
+                    if top_bid:
+                        winner = db.query(UserDB).filter(UserDB.id == top_bid.user_id).first()
+                        results_msg += f"📦 <b>{item.title}</b> — Победитель: <b>{winner.nickname}</b> (Ролл: {top_bid.roll_result})\n"
+                    else:
+                        results_msg += f"📦 <b>{item.title}</b> — Никто не подал заявку\n"
+
+                # Здесь можно отправить сообщение в чат гильдии через бота
+                # await bot.send_message(CHAT_ID, results_msg, parse_mode="HTML")
+                print(results_msg) # Лог в консоль Render
+
+            db.commit()
+        except Exception as e:
+            print(f"Ошибка при завершении раунда: {e}")
+        finally:
+            db.close()
