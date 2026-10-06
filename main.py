@@ -398,3 +398,31 @@ async def promote_to_admin(tg_id: int, db: Session = Depends(get_db)):
     user.role = "admin"
     db.commit()
     return {"status": "ok", "message": f"Пользователь {user.nickname} теперь Админ!"}
+
+import os
+from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+app = FastAPI()
+
+# Абсолютный путь к папке с собранным React-приложением
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FRONTEND_DIST = os.path.join(BASE_DIR, "frontend", "dist")
+
+if os.path.exists(FRONTEND_DIST):
+    # Подключаем статические файлы (JS, CSS, картинки)
+    assets_dir = os.path.join(FRONTEND_DIST, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    # Любой маршрут, не являющийся API, отдаёт index.html
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        if full_path.startswith("api"):
+            raise HTTPException(status_code=404, detail="API endpoint not found")
+        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
+else:
+    @app.get("/")
+    async def root():
+        return {"status": "ok", "message": "Бэкенд работает. Фронтенд еще не собран."}
