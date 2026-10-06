@@ -135,11 +135,11 @@ async def start_cmd(message: Message):
 
 dp.include_router(router)
 
-# ==================== ТАЙМЕР ЗАВЕРШЕНИЯ РАУНДОВ ====================
+# ==================== ТАЙМЕР ЗАВЕРШЕНИЯ РАУНДОВ И ПОДВЕДЕНИЕ ИТОГОВ ====================
 
 async def check_and_finish_rounds():
     while True:
-        await asyncio.sleep(10)
+        await asyncio.sleep(10)  # Проверка каждые 10 секунд
         db = SessionLocal()
         try:
             now = datetime.utcnow()
@@ -150,10 +150,23 @@ async def check_and_finish_rounds():
 
             for rnd in expired_rounds:
                 rnd.status = "finished"
-                print(f"[LootRound] Раунд #{rnd.id} завершен!")
+                items = db.query(ItemDB).filter(ItemDB.round_id == rnd.id).all()
+                
+                results_msg = f"<b>🏆 Итоги раунда #{rnd.id}:</b>\n\n"
+
+                for item in items:
+                    top_bid = db.query(BidDB).filter(BidDB.item_id == item.id).order_by(BidDB.roll_result.desc()).first()
+                    if top_bid:
+                        winner = db.query(UserDB).filter(UserDB.id == top_bid.user_id).first()
+                        results_msg += f"📦 <b>{item.title}</b> — Победитель: <b>{winner.nickname}</b> (Ролл: {top_bid.roll_result})\n"
+                    else:
+                        results_msg += f"📦 <b>{item.title}</b> — Никто не подал заявку\n"
+
+                print(results_msg)  # Лог итогов в консоль сервера
+
             db.commit()
         except Exception as e:
-            print(f"Ошибка таймера: {e}")
+            print(f"Ошибка при завершении раунда: {e}")
         finally:
             db.close()
 
@@ -164,15 +177,6 @@ async def lifespan(app: FastAPI):
     yield
     polling_task.cancel()
     timer_task.cancel()
-  
-  @asynccontextmanager
-async def lifespan(app: FastAPI):
-    polling_task = asyncio.create_task(dp.start_polling(bot))
-    timer_task = asyncio.create_task(check_and_finish_rounds()) # Запуск таймера
-    yield
-    polling_task.cancel()
-    timer_task.cancel()
-
 
 # ==================== FASTAPI APP ====================
 
@@ -229,8 +233,6 @@ async def get_user(tg_id: int, db: Session = Depends(get_db)):
 @app.get("/api/admin/promote/{tg_id}")
 async def promote_to_admin(tg_id: int, db: Session = Depends(get_db)):
     user = db.query(UserDB).filter(UserDB.tg_id == tg_id).first()
-    
-    # Если пользователя еще нет в базе — создаем его сразу с ролью админа
     if not user:
         user = UserDB(
             tg_id=tg_id,
@@ -242,129 +244,10 @@ async def promote_to_admin(tg_id: int, db: Session = Depends(get_db)):
         db.commit()
         return {"status": "ok", "message": f"Пользователь с ID {tg_id} был создан и назначен Админом!"}
     
-    # Если пользователь уже зарегистрирован — обновляем его роль
     user.role = "admin"
     db.commit()
     return {"status": "ok", "message": f"Пользователь {user.nickname} теперь Админ!"}
 
-
-# ----------------- РАСПРЕДЕЛЕНИЕ ЛУТА (РОУТЫ) -----------------
-
-@app.post("/api/items/create")
-async def create_item(data: CreateItemSchema, db: Session = Depends(get_db)):
-    item = ItemDB(**data.dict())
-    db.add(item)
-    db.commit()
-    return {"status": "ok", "item_id": item.id}
-
-@app.post("/api/rounds/start")
-async def start_round(db: Session = Depends(get_db)):
-    end_time = datetime.utcnow() + timedelta(minutes=3)
-    new_round = LootRoundDB(end_time=end_time)
-    db.add(new_round)
-    db.commit()
-
-    db.query(ItemDB).filter(ItemDB.round_id == None).update({"round_id": new_round.id})
-    db.commit()
-
-    return {"status": "ok", "round_id": new_round.id, "end_time": end_time}
-
-@app.post("/api/bids/add")
-async def add_bid(data: BidSchema, db: Session = Depends(get_db)):
-    user = db.query(UserDB).filter(UserDB.tg_id == data.tg_id).first()
-    item = db.query(ItemDB).filter(ItemDB.id == data.item_id).first()
-
-    if not user or not item:
-        raise HTTPException(status_code=404, detail="Пользователь или предмет не найден")
-
-    if item.required_class != "Все" and item.required_class != user.character_class:
-        raise HTTPException(status_code=400, detail="Предмет не подходит вашему классу!")
-
-    total_penalty = sum(p.amount for p in user.penalties)
-    base_roll = random.randint(1, 100)
-    final_roll = max(1, base_roll - total_penalty)
-
-    existing_bid = db.query(BidDB).filter(
-        BidDB.round_id == item.round_id, 
-        BidDB.user_id == user.id, 
-        BidDB.item_id == item.id
-    ).first()
-    if existing_bid:
-        return {"status": "already_exists", "roll": existing_bid.roll_result}
-
-    bid = BidDB(round_id=item.round_id, user_id=user.id, item_id=item.id, roll_result=final_roll)
-    db.add(bid)
-    db.commit()
-
-    return {"status": "ok", "roll": final_roll}
-
-@app.get("/api/rounds/current")
-async def get_current_round(db: Session = Depends(get_db)):
-    active_round = db.query(LootRoundDB).filter(LootRoundDB.status == "active").order_by(LootRoundDB.id.desc()).first()
-    if not active_round:
-        return {"active": False}
-
-    items = db.query(ItemDB).filter(ItemDB.round_id == active_round.id).all()
-    return {
-        "active": True,
-        "round_id": active_round.id,
-        "end_time": active_round.end_time,
-        "items": items
-    }
-
-# ----------------- РАЗДАЧА СТАТИКИ REACT -----------------
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FRONTEND_DIST = os.path.join(BASE_DIR, "frontend", "dist")
-
-if os.path.exists(FRONTEND_DIST):
-    assets_dir = os.path.join(FRONTEND_DIST, "assets")
-    if os.path.exists(assets_dir):
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
-
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        if full_path.startswith("api"):
-            raise HTTPException(status_code=404, detail="API endpoint not found")
-        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
-else:
-    @app.get("/")
-    async def root():
-        return {"status": "ok", "message": "Бэкенд работает. Фронтенд еще не собран."}
-
-# Логика определения победителей
-async def check_and_finish_rounds():
-    while True:
-        await asyncio.sleep(10) # Проверка каждые 10 секунд
-        db = SessionLocal()
-        try:
-            now = datetime.utcnow()
-            expired_rounds = db.query(LootRoundDB).filter(
-                LootRoundDB.status == "active",
-                LootRoundDB.end_time <= now
-            ).all()
-
-            for rnd in expired_rounds:
-                rnd.status = "finished"
-                items = db.query(ItemDB).filter(ItemDB.round_id == rnd.id).all()
-                
-                results_msg = "<b>🏆 Итоги распределения лута:</b>\n\n"
-
-                for item in items:
-                    # Находим заявку с максимальным роллом
-                    top_bid = db.query(BidDB).filter(BidDB.item_id == item.id).order_by(BidDB.roll_result.desc()).first()
-                    if top_bid:
-                        winner = db.query(UserDB).filter(UserDB.id == top_bid.user_id).first()
-                        results_msg += f"📦 <b>{item.title}</b> — Победитель: <b>{winner.nickname}</b> (Ролл: {top_bid.roll_result})\n"
-                    else:
-                        results_msg += f"📦 <b>{item.title}</b> — Никто не подал заявку\n"
-
-                # Здесь можно отправить сообщение в чат гильдии через бота
-                # await bot.send_message(CHAT_ID, results_msg, parse_mode="HTML")
-                print(results_msg) # Лог в консоль Render
-
-            db.commit()
-        except Exception as e:
-            print(f"Ошибка при завершении раунда: {e}")
-        finally:
-            db.close()
+@app.post("/api/penalties/add")
+async def add_penalty(data: PenaltyCreateSchema, db: Session = Depends(get_db)):
+    db_user = db.query(UserDB).filter(UserDB.tg_id
