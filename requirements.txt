@@ -3,4 +3,3 @@ uvicorn
 aiogram
 sqlalchemy
 pydantic
-import
