@@ -123,14 +123,7 @@ router = Router()
 
 @router.message(CommandStart())
 async def start_cmd(message: Message):
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(
-                text="🎮 Открыть Лут-Менеджер", 
-                web_app=WebAppInfo(url=WEBAPP_URL)
-            )
-        ]]
-    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎮 Открыть Лут-Менеджер", web_app=WebAppInfo(url=WEBAPP_URL))]])
     await message.answer("Привет! Нажми на кнопку ниже, чтобы открыть менеджер лута:", reply_markup=kb)
 
 dp.include_router(router)
@@ -199,15 +192,8 @@ async def register_user(user_data: UserCreateSchema, db: Session = Depends(get_d
         db.add(db_user)
     db.commit()
     db.refresh(db_user)
-    return {
-        "status": "ok",
-        "user": {
-            "id": db_user.id,
-            "nickname": db_user.nickname,
-            "class": db_user.character_class,
-            "role": db_user.role
-        }
-    }
+    res_user = {"id": db_user.id, "nickname": db_user.nickname, "class": db_user.character_class, "role": db_user.role}
+    return {"status": "ok", "user": res_user}
 
 @app.get("/api/users/{tg_id}")
 async def get_user(tg_id: int, db: Session = Depends(get_db)):
@@ -215,18 +201,71 @@ async def get_user(tg_id: int, db: Session = Depends(get_db)):
     if not db_user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     
-    penalties = [
-        {
-            "id": p.id,
-            "reason": p.reason,
-            "amount": p.amount,
-            "created_at": p.created_at.strftime("%Y-%m-%d %H:%M")
-        }
-        for p in db_user.penalties
-    ]
+    penalties = [{"id": p.id, "reason": p.reason, "amount": p.amount, "created_at": p.created_at.strftime("%Y-%m-%d %H:%M")} for p in db_user.penalties]
     total_penalties = sum(p.amount for p in db_user.penalties)
     
-    return {
-        "tg_id": db_user.tg_id,
-        "nickname": db_user.nickname,
-        "character_class": db_user.
+    return {"tg_id": db_user.tg_id, "nickname": db_user.nickname, "character_class": db_user.character_class, "role": db_user.role, "total_penalties": total_penalties, "penalties": penalties}
+
+@app.get("/api/admin/promote/{tg_id}")
+async def promote_to_admin(tg_id: int, db: Session = Depends(get_db)):
+    user = db.query(UserDB).filter(UserDB.tg_id == tg_id).first()
+    if not user:
+        user = UserDB(tg_id=tg_id, nickname=f"Admin_{tg_id}", character_class="Администратор", role="admin")
+        db.add(user)
+        db.commit()
+        return {"status": "ok", "message": f"Пользователь с ID {tg_id} был создан и назначен Админом!"}
+    
+    user.role = "admin"
+    db.commit()
+    return {"status": "ok", "message": f"Пользователь {user.nickname} теперь Админ!"}
+
+@app.post("/api/penalties/add")
+async def add_penalty(data: PenaltyCreateSchema, db: Session = Depends(get_db)):
+    db_user = db.query(UserDB).filter(UserDB.tg_id == data.tg_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="Игрок не найден")
+    
+    penalty = PenaltyDB(user_id=db_user.id, reason=data.reason, amount=data.amount)
+    db.add(penalty)
+    db.commit()
+    return {"status": "ok", "message": f"Штраф {data.amount} выдан игроку {db_user.nickname}"}
+
+# ----------------- РАСПРЕДЕЛЕНИЕ ЛУТА -----------------
+
+@app.post("/api/items/create")
+async def create_item(data: CreateItemSchema, db: Session = Depends(get_db)):
+    item = ItemDB(**data.dict())
+    db.add(item)
+    db.commit()
+    return {"status": "ok", "item_id": item.id}
+
+@app.post("/api/rounds/start")
+async def start_round(db: Session = Depends(get_db)):
+    end_time = datetime.utcnow() + timedelta(minutes=3)
+    new_round = LootRoundDB(end_time=end_time)
+    db.add(new_round)
+    db.commit()
+
+    db.query(ItemDB).filter(ItemDB.round_id == None).update({"round_id": new_round.id})
+    db.commit()
+
+    return {"status": "ok", "round_id": new_round.id, "end_time": end_time}
+
+@app.post("/api/bids/add")
+async def add_bid(data: BidSchema, db: Session = Depends(get_db)):
+    user = db.query(UserDB).filter(UserDB.tg_id == data.tg_id).first()
+    item = db.query(ItemDB).filter(ItemDB.id == data.item_id).first()
+
+    if not user or not item:
+        raise HTTPException(status_code=404, detail="Пользователь или предмет не найден")
+
+    if item.required_class != "Все" and item.required_class != user.character_class:
+        raise HTTPException(status_code=400, detail="Предмет не подходит вашему классу!")
+
+    total_penalty = sum(p.amount for p in user.penalties)
+    base_roll = random.randint(1, 100)
+    final_roll = max(1, base_roll - total_penalty)
+
+    existing_bid = db.query(BidDB).filter(BidDB.round_id == item.round_id, BidDB.user_id == user.id, BidDB.item_id == item.id).first()
+    if existing_bid:
+        return {"status": "already_exists
