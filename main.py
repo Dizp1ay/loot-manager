@@ -6,8 +6,11 @@ from aiogram import Bot, Dispatcher, Router
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from aiogram.filters import CommandStart
 
+# 1. Вставьте токен вашего бота от @BotFather
 BOT_TOKEN = "8752920626:AAFTkqldcmMOS1VhyI7ttaMLR2D3nmQkPc0"
-WEBAPP_URL = "https://your-cloudflare-tunnel.trycloudflare.com"
+
+# 2. Ссылку подставим на Шаге 4 после создания сервиса на Render!
+WEBAPP_URL = "https://loot-manager.onrender.com"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -29,12 +32,14 @@ dp.include_router(router)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Запускаем поллинг бота при старте сервера
     polling_task = asyncio.create_task(dp.start_polling(bot))
     yield
     polling_task.cancel()
 
-app = FastAPI(title="Loot Manager", lifespan=lifespan)
+app = FastAPI(title="Loot Manager API", lifespan=lifespan)
 
+# Настройка CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -45,4 +50,4 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "Сервер работает!"}
+    return {"status": "ok", "message": "Лут-менеджер бэкенд успешно работает!"}
