@@ -268,8 +268,7 @@ async def add_bid(data: BidSchema, db: Session = Depends(get_db)):
 
     existing_bid = db.query(BidDB).filter(BidDB.round_id == item.round_id, BidDB.user_id == user.id, BidDB.item_id == item.id).first()
     if existing_bid:
-        msg_status = "already_exists"
-        return {"status": msg_status, "roll": existing_bid.roll_result}
+        return {"status": "already_exists", "roll": existing_bid.roll_result}
 
     bid = BidDB(round_id=item.round_id, user_id=user.id, item_id=item.id, roll_result=final_roll)
     db.add(bid)
@@ -281,7 +280,7 @@ async def add_bid(data: BidSchema, db: Session = Depends(get_db)):
 async def get_current_round(db: Session = Depends(get_db)):
     active_round = db.query(LootRoundDB).filter(LootRoundDB.status == "active").order_by(LootRoundDB.id.desc()).first()
     if not active_round:
-        return {"active": False}
+        return {"active": False, "items": []}
 
     items = db.query(ItemDB).filter(ItemDB.round_id == active_round.id).all()
     return {"active": True, "round_id": active_round.id, "end_time": active_round.end_time, "items": items}
