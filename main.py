@@ -38,45 +38,38 @@ class UserDB(Base):
     nickname = Column(String, nullable=False)
     character_class = Column(String, nullable=False)
     role = Column(String, default="player")  # "player" или "admin"
-    
-    penalties = relationship("PenaltyDB", back_populates="user", cascade="all, delete-orphan")
-    requests = relationship("LootRequestDB", back_populates="user", cascade="all, delete-orphan")
+    penalties = relationship("PenaltyDB", back_populates="user")
+    bids = relationship("BidDB", back_populates="user")
 
-class PenaltyDB(Base):
-    __tablename__ = "penalties"
+class ItemDB(Base):
+    __tablename__ = "items"
 
     id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    category = Column(String, nullable=False)  # "Экипировка", "Материалы", "Гербы"
+    properties = Column(String, nullable=True) # например: "Четырехкратный взрыв, Удача III"
+    count = Column(Integer, default=1)
+    required_class = Column(String, nullable=True) # Ограничение по классу ("Маг", "Все")
+    round_id = Column(Integer, ForeignKey("loot_rounds.id"), nullable=True)
+
+class LootRoundDB(Base):
+    __tablename__ = "loot_rounds"
+
+    id = Column(Integer, primary_key=True, index=True)
+    status = Column(String, default="active") # "active" или "finished"
+    created_at = Column(DateTime, default=datetime.utcnow)
+    end_time = Column(DateTime, nullable=False)
+
+class BidDB(Base):
+    __tablename__ = "bids"
+
+    id = Column(Integer, primary_key=True, index=True)
+    round_id = Column(Integer, ForeignKey("loot_rounds.id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    reason = Column(String, nullable=False)
-    amount = Column(Integer, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    user = relationship("UserDB", back_populates="penalties")
+    item_id = Column(Integer, ForeignKey("items.id"), nullable=False)
+    roll_result = Column(Integer, nullable=True)
 
-class LootItemDB(Base):
-    __tablename__ = "loot_items"
-
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
-    item_type = Column(String, default="Экипировка")
-    req_class = Column(String, default="Все")  # "Воин", "Маг", "Все" и т.д.
-    duration_seconds = Column(Integer, default=180)  # Длительность ролла в секундах
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    requests = relationship("LootRequestDB", back_populates="item", cascade="all, delete-orphan")
-
-class LootRequestDB(Base):
-    __tablename__ = "loot_requests"
-
-    id = Column(Integer, primary_key=True, index=True)
-    item_id = Column(Integer, ForeignKey("loot_items.id"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    raw_roll = Column(Integer, nullable=False)    # Чистый ролл 1-100
-    final_roll = Column(Integer, nullable=False)  # Ролл с учетом вычета штрафов
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    item = relationship("LootItemDB", back_populates="requests")
-    user = relationship("UserDB", back_populates="requests")
+    user = relationship("UserDB", back_populates="bids")
 
 # Автоматическое создание всех таблиц при запуске
 Base.metadata.create_all(bind=engine)
