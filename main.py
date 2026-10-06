@@ -268,4 +268,40 @@ async def add_bid(data: BidSchema, db: Session = Depends(get_db)):
 
     existing_bid = db.query(BidDB).filter(BidDB.round_id == item.round_id, BidDB.user_id == user.id, BidDB.item_id == item.id).first()
     if existing_bid:
-        return {"status": "already_exists
+        msg_status = "already_exists"
+        return {"status": msg_status, "roll": existing_bid.roll_result}
+
+    bid = BidDB(round_id=item.round_id, user_id=user.id, item_id=item.id, roll_result=final_roll)
+    db.add(bid)
+    db.commit()
+
+    return {"status": "ok", "roll": final_roll}
+
+@app.get("/api/rounds/current")
+async def get_current_round(db: Session = Depends(get_db)):
+    active_round = db.query(LootRoundDB).filter(LootRoundDB.status == "active").order_by(LootRoundDB.id.desc()).first()
+    if not active_round:
+        return {"active": False}
+
+    items = db.query(ItemDB).filter(ItemDB.round_id == active_round.id).all()
+    return {"active": True, "round_id": active_round.id, "end_time": active_round.end_time, "items": items}
+
+# ----------------- РАЗДАЧА СТАТИКИ REACT -----------------
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FRONTEND_DIST = os.path.join(BASE_DIR, "frontend", "dist")
+
+if os.path.exists(FRONTEND_DIST):
+    assets_dir = os.path.join(FRONTEND_DIST, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        if full_path.startswith("api"):
+            raise HTTPException(status_code=404, detail="API endpoint not found")
+        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
+else:
+    @app.get("/")
+    async def root():
+        return {"status": "ok", "message": "Бэкенд работает. Фронтенд еще не собран."}
