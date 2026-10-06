@@ -1,7 +1,7 @@
 import os
 import random
 import asyncio
-from typing import List, Optional
+from typing import Optional
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
@@ -38,8 +38,20 @@ class UserDB(Base):
     nickname = Column(String, nullable=False)
     character_class = Column(String, nullable=False)
     role = Column(String, default="player")  # "player" или "admin"
+    
     penalties = relationship("PenaltyDB", back_populates="user")
     bids = relationship("BidDB", back_populates="user")
+
+class PenaltyDB(Base):
+    __tablename__ = "penalties"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    reason = Column(String, nullable=False)
+    amount = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("UserDB", back_populates="penalties")
 
 class ItemDB(Base):
     __tablename__ = "items"
@@ -47,16 +59,16 @@ class ItemDB(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, nullable=False)
     category = Column(String, nullable=False)  # "Экипировка", "Материалы", "Гербы"
-    properties = Column(String, nullable=True) # например: "Четырехкратный взрыв, Удача III"
+    properties = Column(String, nullable=True)
     count = Column(Integer, default=1)
-    required_class = Column(String, nullable=True) # Ограничение по классу ("Маг", "Все")
+    required_class = Column(String, nullable=True)
     round_id = Column(Integer, ForeignKey("loot_rounds.id"), nullable=True)
 
 class LootRoundDB(Base):
     __tablename__ = "loot_rounds"
 
     id = Column(Integer, primary_key=True, index=True)
-    status = Column(String, default="active") # "active" или "finished"
+    status = Column(String, default="active")  # "active" или "finished"
     created_at = Column(DateTime, default=datetime.utcnow)
     end_time = Column(DateTime, nullable=False)
 
@@ -71,7 +83,6 @@ class BidDB(Base):
 
     user = relationship("UserDB", back_populates="bids")
 
-# Автоматическое создание всех таблиц при запуске
 Base.metadata.create_all(bind=engine)
 
 # ==================== PYDANTIC СХЕМЫ ====================
@@ -86,13 +97,14 @@ class PenaltyCreateSchema(BaseModel):
     reason: str
     amount: int
 
-class LootCreateSchema(BaseModel):
-    name: str
-    item_type: str = "Экипировка"
-    req_class: str = "Все"
-    duration_seconds: int = 180
+class CreateItemSchema(BaseModel):
+    title: str
+    category: str
+    properties: Optional[str] = None
+    count: Optional[int] = 1
+    required_class: Optional[str] = "Все"
 
-class LootRollSchema(BaseModel):
+class BidSchema(BaseModel):
     tg_id: int
     item_id: int
 
@@ -123,11 +135,35 @@ async def start_cmd(message: Message):
 
 dp.include_router(router)
 
+# ==================== ТАЙМЕР ЗАВЕРШЕНИЯ РАУНДОВ ====================
+
+async def check_and_finish_rounds():
+    while True:
+        await asyncio.sleep(10)
+        db = SessionLocal()
+        try:
+            now = datetime.utcnow()
+            expired_rounds = db.query(LootRoundDB).filter(
+                LootRoundDB.status == "active",
+                LootRoundDB.end_time <= now
+            ).all()
+
+            for rnd in expired_rounds:
+                rnd.status = "finished"
+                print(f"[LootRound] Раунд #{rnd.id} завершен!")
+            db.commit()
+        except Exception as e:
+            print(f"Ошибка таймера: {e}")
+        finally:
+            db.close()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     polling_task = asyncio.create_task(dp.start_polling(bot))
+    timer_task = asyncio.create_task(check_and_finish_rounds())
     yield
     polling_task.cancel()
+    timer_task.cancel()
 
 # ==================== FASTAPI APP ====================
 
@@ -181,6 +217,16 @@ async def get_user(tg_id: int, db: Session = Depends(get_db)):
         "penalties": penalties
     }
 
+@app.get("/api/admin/promote/{tg_id}")
+async def promote_to_admin(tg_id: int, db: Session = Depends(get_db)):
+    user = db.query(UserDB).filter(UserDB.tg_id == tg_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    user.role = "admin"
+    db.commit()
+    return {"status": "ok", "message": f"Пользователь {user.nickname} теперь Админ!"}
+
 @app.post("/api/penalties/add")
 async def add_penalty(data: PenaltyCreateSchema, db: Session = Depends(get_db)):
     db_user = db.query(UserDB).filter(UserDB.tg_id == data.tg_id).first()
@@ -192,135 +238,8 @@ async def add_penalty(data: PenaltyCreateSchema, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "ok", "message": f"Штраф {data.amount} выдан игроку {db_user.nickname}"}
 
-# ----------------- РАСПРЕДЕЛЕНИЕ ЛУТА (РОЛЛЫ) -----------------
+# ----------------- РАСПРЕДЕЛЕНИЕ ЛУТА (РОУТЫ) -----------------
 
-@app.get("/api/loot")
-async def get_loot_list(db: Session = Depends(get_db)):
-    """Получение всех предметов лута и текущих заявок участников"""
-    items = db.query(LootItemDB).order_by(LootItemDB.created_at.desc()).all()
-    now = datetime.utcnow()
-    
-    result = []
-    for item in items:
-        expires_at = item.created_at + timedelta(seconds=item.duration_seconds)
-        time_left = int((expires_at - now).total_seconds())
-        is_active = time_left > 0
-
-        # Формируем список участников с подсчитанными баллами ролла
-        requests_data = []
-        for req in item.requests:
-            requests_data.append({
-                "user_id": req.user.tg_id,
-                "nickname": req.user.nickname,
-                "character_class": req.user.character_class,
-                "raw_roll": req.raw_roll,
-                "final_roll": req.final_roll
-            })
-        
-        # Сортируем участников по итоговым очкам (по убыванию)
-        requests_data.sort(key=lambda x: x["final_roll"], reverse=True)
-
-        result.append({
-            "id": item.id,
-            "name": item.name,
-            "item_type": item.item_type,
-            "req_class": item.req_class,
-            "time_left": max(0, time_left),
-            "is_active": is_active,
-            "requests": requests_data
-        })
-    return result
-
-@app.post("/api/loot/create")
-async def create_loot_item(data: LootCreateSchema, db: Session = Depends(get_db)):
-    """Создание предмета для розыгрыша (РЛ / Офицер)"""
-    item = LootItemDB(
-        name=data.name,
-        item_type=data.item_type,
-        req_class=data.req_class,
-        duration_seconds=data.duration_seconds
-    )
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-    return {"status": "ok", "item_id": item.id}
-
-@app.post("/api/loot/roll")
-async def roll_loot_item(data: LootRollSchema, db: Session = Depends(get_db)):
-    """Бросок кубика игроком на конкретный предмет"""
-    db_user = db.query(UserDB).filter(UserDB.tg_id == data.tg_id).first()
-    if not db_user:
-        raise HTTPException(status_code=404, detail="Пользователь не найден")
-        
-    item = db.query(LootItemDB).filter(LootItemDB.id == data.item_id).first()
-    if not item:
-        raise HTTPException(status_code=404, detail="Предмет не найден")
-
-    # Проверка таймера
-    expires_at = item.created_at + timedelta(seconds=item.duration_seconds)
-    if datetime.utcnow() > expires_at:
-        raise HTTPException(status_code=400, detail="Время розыгрыша этого предмета истекло")
-
-    # Проверка на повторный бросок
-    existing_req = db.query(LootRequestDB).filter(
-        LootRequestDB.item_id == item.id,
-        LootRequestDB.user_id == db_user.id
-    ).first()
-    if existing_req:
-        raise HTTPException(status_code=400, detail="Вы уже сделали бросок на этот предмет")
-
-    # Генерация ролла 1-100 и вычет штрафных очков
-    raw_roll = random.randint(1, 100)
-    total_penalties = sum(p.amount for p in db_user.penalties)
-    final_roll = max(1, raw_roll - total_penalties)
-
-    loot_request = LootRequestDB(
-        item_id=item.id,
-        user_id=db_user.id,
-        raw_roll=raw_roll,
-        final_roll=final_roll
-    )
-    db.add(loot_request)
-    db.commit()
-
-    return {
-        "status": "ok",
-        "raw_roll": raw_roll,
-        "penalty_applied": total_penalties,
-        "final_roll": final_roll
-    }
-
-# ----------------- РАЗДАЧА СТАТИКИ REACT -----------------
-
-dist_path = os.path.join(os.path.dirname(__file__), "frontend", "dist")
-
-if os.path.exists(dist_path):
-    app.mount("/assets", StaticFiles(directory=os.path.join(dist_path, "assets")), name="assets")
-
-    @app.get("/{full_path:path}")
-    async def serve_react(full_path: str):
-        return FileResponse(os.path.join(dist_path, "index.html"))
-else:
-    @app.get("/")
-    async def root():
-        return {"status": "ok", "message": "Бэкенд работает. Фронтенд еще не собран."}
-
-import random
-from datetime import timedelta
-
-# Схемы данных
-class CreateItemSchema(BaseModel):
-    title: str
-    category: str
-    properties: Optional[str] = None
-    count: Optional[int] = 1
-    required_class: Optional[str] = "Все"
-
-class BidSchema(BaseModel):
-    tg_id: int
-    item_id: int
-
-# 1. Добавление предмета админом
 @app.post("/api/items/create")
 async def create_item(data: CreateItemSchema, db: Session = Depends(get_db)):
     item = ItemDB(**data.dict())
@@ -328,7 +247,6 @@ async def create_item(data: CreateItemSchema, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "ok", "item_id": item.id}
 
-# 2. Запуск раунда распределения на 3 минуты
 @app.post("/api/rounds/start")
 async def start_round(db: Session = Depends(get_db)):
     end_time = datetime.utcnow() + timedelta(minutes=3)
@@ -336,13 +254,11 @@ async def start_round(db: Session = Depends(get_db)):
     db.add(new_round)
     db.commit()
 
-    # Привязываем все незадействованные предметы к новому раунду
     db.query(ItemDB).filter(ItemDB.round_id == None).update({"round_id": new_round.id})
     db.commit()
 
     return {"status": "ok", "round_id": new_round.id, "end_time": end_time}
 
-# 3. Подача заявки игроком ("Кнопка ХОЧУ")
 @app.post("/api/bids/add")
 async def add_bid(data: BidSchema, db: Session = Depends(get_db)):
     user = db.query(UserDB).filter(UserDB.tg_id == data.tg_id).first()
@@ -351,19 +267,18 @@ async def add_bid(data: BidSchema, db: Session = Depends(get_db)):
     if not user or not item:
         raise HTTPException(status_code=404, detail="Пользователь или предмет не найден")
 
-    # Проверка на класс
     if item.required_class != "Все" and item.required_class != user.character_class:
         raise HTTPException(status_code=400, detail="Предмет не подходит вашему классу!")
 
-    # Расчет штрафа из имеющихся очков
     total_penalty = sum(p.amount for p in user.penalties)
-    
-    # Генерация ролла 1-100 с учетом штрафа
     base_roll = random.randint(1, 100)
     final_roll = max(1, base_roll - total_penalty)
 
-    # Проверка дубликатов заявок
-    existing_bid = db.query(BidDB).filter(BidDB.round_id == item.round_id, BidDB.user_id == user.id, BidDB.item_id == item.id).first()
+    existing_bid = db.query(BidDB).filter(
+        BidDB.round_id == item.round_id, 
+        BidDB.user_id == user.id, 
+        BidDB.item_id == item.id
+    ).first()
     if existing_bid:
         return {"status": "already_exists", "roll": existing_bid.roll_result}
 
@@ -373,7 +288,6 @@ async def add_bid(data: BidSchema, db: Session = Depends(get_db)):
 
     return {"status": "ok", "roll": final_roll}
 
-# 4. Получение списка активных предметов раунда
 @app.get("/api/rounds/current")
 async def get_current_round(db: Session = Depends(get_db)):
     active_round = db.query(LootRoundDB).filter(LootRoundDB.status == "active").order_by(LootRoundDB.id.desc()).first()
@@ -387,36 +301,17 @@ async def get_current_round(db: Session = Depends(get_db)):
         "end_time": active_round.end_time,
         "items": items
     }
-    
-# Быстрый способ сделать себя админом
-@app.get("/api/admin/promote/{tg_id}")
-async def promote_to_admin(tg_id: int, db: Session = Depends(get_db)):
-    user = db.query(UserDB).filter(UserDB.tg_id == tg_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Пользователь не найден")
-    
-    user.role = "admin"
-    db.commit()
-    return {"status": "ok", "message": f"Пользователь {user.nickname} теперь Админ!"}
 
-import os
-from fastapi import FastAPI, HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+# ----------------- РАЗДАЧА СТАТИКИ REACT -----------------
 
-app = FastAPI()
-
-# Абсолютный путь к папке с собранным React-приложением
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIST = os.path.join(BASE_DIR, "frontend", "dist")
 
 if os.path.exists(FRONTEND_DIST):
-    # Подключаем статические файлы (JS, CSS, картинки)
     assets_dir = os.path.join(FRONTEND_DIST, "assets")
     if os.path.exists(assets_dir):
         app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 
-    # Любой маршрут, не являющийся API, отдаёт index.html
     @app.get("/{full_path:path}")
     async def serve_frontend(full_path: str):
         if full_path.startswith("api"):
