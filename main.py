@@ -387,3 +387,14 @@ async def get_current_round(db: Session = Depends(get_db)):
         "end_time": active_round.end_time,
         "items": items
     }
+    
+# Быстрый способ сделать себя админом
+@app.get("/api/admin/promote/{tg_id}")
+async def promote_to_admin(tg_id: int, db: Session = Depends(get_db)):
+    user = db.query(UserDB).filter(UserDB.tg_id == tg_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    user.role = "admin"
+    db.commit()
+    return {"status": "ok", "message": f"Пользователь {user.nickname} теперь Админ!"}
