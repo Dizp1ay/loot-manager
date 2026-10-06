@@ -22,6 +22,8 @@ from aiogram.filters import CommandStart
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8752920626:AAFTkqldcmMOS1VhyI7ttaMLR2D3nmQkPc0")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "https://loot-manager-bot.onrender.com")
+# Укажите ID вашего чата/канала Telegram для итогов (или оставьте None, если пока отправка не нужна)
+GUILD_CHAT_ID = os.getenv("GUILD_CHAT_ID", None)
 
 DATABASE_URL = "sqlite:///./loot.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -132,7 +134,7 @@ dp.include_router(router)
 
 async def check_and_finish_rounds():
     while True:
-        await asyncio.sleep(10)
+        await asyncio.sleep(5)
         db = SessionLocal()
         try:
             now = datetime.utcnow()
@@ -152,6 +154,13 @@ async def check_and_finish_rounds():
                         results_msg += f"📦 <b>{item.title}</b> — Никто не подал заявку\n"
 
                 print(results_msg)
+                
+                # Если передан ID чата гильдии — отправляем туда сообщение
+                if GUILD_CHAT_ID:
+                    try:
+                        await bot.send_message(chat_id=GUILD_CHAT_ID, text=results_msg, parse_mode="HTML")
+                    except Exception as send_err:
+                        print(f"Ошибка отправки в Telegram чат: {send_err}")
 
             db.commit()
         except Exception as e:
@@ -262,13 +271,13 @@ async def add_bid(data: BidSchema, db: Session = Depends(get_db)):
     if item.required_class != "Все" and item.required_class != user.character_class:
         raise HTTPException(status_code=400, detail="Предмет не подходит вашему классу!")
 
-    total_penalty = sum(p.amount for p in user.penalties)
-    base_roll = random.randint(1, 100)
-    final_roll = max(1, base_roll - total_penalty)
-
     existing_bid = db.query(BidDB).filter(BidDB.round_id == item.round_id, BidDB.user_id == user.id, BidDB.item_id == item.id).first()
     if existing_bid:
         return {"status": "already_exists", "roll": existing_bid.roll_result}
+
+    total_penalty = sum(p.amount for p in user.penalties)
+    base_roll = random.randint(1, 100)
+    final_roll = max(1, base_roll - total_penalty)
 
     bid = BidDB(round_id=item.round_id, user_id=user.id, item_id=item.id, roll_result=final_roll)
     db.add(bid)
@@ -277,13 +286,28 @@ async def add_bid(data: BidSchema, db: Session = Depends(get_db)):
     return {"status": "ok", "roll": final_roll}
 
 @app.get("/api/rounds/current")
-async def get_current_round(db: Session = Depends(get_db)):
+async def get_current_round(tg_id: Optional[int] = None, db: Session = Depends(get_db)):
     active_round = db.query(LootRoundDB).filter(LootRoundDB.status == "active").order_by(LootRoundDB.id.desc()).first()
     if not active_round:
         return {"active": False, "items": []}
 
     items = db.query(ItemDB).filter(ItemDB.round_id == active_round.id).all()
-    return {"active": True, "round_id": active_round.id, "end_time": active_round.end_time, "items": items}
+    
+    user_bids = {}
+    if tg_id:
+        user = db.query(UserDB).filter(UserDB.tg_id == tg_id).first()
+        if user:
+            bids = db.query(BidDB).filter(BidDB.round_id == active_round.id, BidDB.user_id == user.id).all()
+            for b in bids:
+                user_bids[b.item_id] = b.roll_result
+
+    return {
+        "active": True, 
+        "round_id": active_round.id, 
+        "end_time": active_round.end_time.isoformat(), 
+        "items": items,
+        "user_bids": user_bids
+    }
 
 # ----------------- РАЗДАЧА СТАТИКИ REACT -----------------
 
