@@ -220,23 +220,24 @@ async def get_user(tg_id: int, db: Session = Depends(get_db)):
 @app.get("/api/admin/promote/{tg_id}")
 async def promote_to_admin(tg_id: int, db: Session = Depends(get_db)):
     user = db.query(UserDB).filter(UserDB.tg_id == tg_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="Пользователь не найден")
     
+    # Если пользователя еще нет в базе — создаем его сразу с ролью админа
+    if not user:
+        user = UserDB(
+            tg_id=tg_id,
+            nickname=f"Admin_{tg_id}",
+            character_class="Администратор",
+            role="admin"
+        )
+        db.add(user)
+        db.commit()
+        return {"status": "ok", "message": f"Пользователь с ID {tg_id} был создан и назначен Админом!"}
+    
+    # Если пользователь уже зарегистрирован — обновляем его роль
     user.role = "admin"
     db.commit()
     return {"status": "ok", "message": f"Пользователь {user.nickname} теперь Админ!"}
 
-@app.post("/api/penalties/add")
-async def add_penalty(data: PenaltyCreateSchema, db: Session = Depends(get_db)):
-    db_user = db.query(UserDB).filter(UserDB.tg_id == data.tg_id).first()
-    if not db_user:
-        raise HTTPException(status_code=404, detail="Игрок не найден")
-    
-    penalty = PenaltyDB(user_id=db_user.id, reason=data.reason, amount=data.amount)
-    db.add(penalty)
-    db.commit()
-    return {"status": "ok", "message": f"Штраф {data.amount} выдан игроку {db_user.nickname}"}
 
 # ----------------- РАСПРЕДЕЛЕНИЕ ЛУТА (РОУТЫ) -----------------
 
