@@ -1,4 +1,4 @@
-import os
+mimport os
 import random
 import asyncio
 from typing import List, Optional
@@ -304,3 +304,86 @@ else:
     @app.get("/")
     async def root():
         return {"status": "ok", "message": "Бэкенд работает. Фронтенд еще не собран."}
+
+import random
+from datetime import timedelta
+
+# Схемы данных
+class CreateItemSchema(BaseModel):
+    title: str
+    category: str
+    properties: Optional[str] = None
+    count: Optional[int] = 1
+    required_class: Optional[str] = "Все"
+
+class BidSchema(BaseModel):
+    tg_id: int
+    item_id: int
+
+# 1. Добавление предмета админом
+@app.post("/api/items/create")
+async def create_item(data: CreateItemSchema, db: Session = Depends(get_db)):
+    item = ItemDB(**data.dict())
+    db.add(item)
+    db.commit()
+    return {"status": "ok", "item_id": item.id}
+
+# 2. Запуск раунда распределения на 3 минуты
+@app.post("/api/rounds/start")
+async def start_round(db: Session = Depends(get_db)):
+    end_time = datetime.utcnow() + timedelta(minutes=3)
+    new_round = LootRoundDB(end_time=end_time)
+    db.add(new_round)
+    db.commit()
+
+    # Привязываем все незадействованные предметы к новому раунду
+    db.query(ItemDB).filter(ItemDB.round_id == None).update({"round_id": new_round.id})
+    db.commit()
+
+    return {"status": "ok", "round_id": new_round.id, "end_time": end_time}
+
+# 3. Подача заявки игроком ("Кнопка ХОЧУ")
+@app.post("/api/bids/add")
+async def add_bid(data: BidSchema, db: Session = Depends(get_db)):
+    user = db.query(UserDB).filter(UserDB.tg_id == data.tg_id).first()
+    item = db.query(ItemDB).filter(ItemDB.id == data.item_id).first()
+
+    if not user or not item:
+        raise HTTPException(status_code=404, detail="Пользователь или предмет не найден")
+
+    # Проверка на класс
+    if item.required_class != "Все" and item.required_class != user.character_class:
+        raise HTTPException(status_code=400, detail="Предмет не подходит вашему классу!")
+
+    # Расчет штрафа из имеющихся очков
+    total_penalty = sum(p.amount for p in user.penalties)
+    
+    # Генерация ролла 1-100 с учетом штрафа
+    base_roll = random.randint(1, 100)
+    final_roll = max(1, base_roll - total_penalty)
+
+    # Проверка дубликатов заявок
+    existing_bid = db.query(BidDB).filter(BidDB.round_id == item.round_id, BidDB.user_id == user.id, BidDB.item_id == item.id).first()
+    if existing_bid:
+        return {"status": "already_exists", "roll": existing_bid.roll_result}
+
+    bid = BidDB(round_id=item.round_id, user_id=user.id, item_id=item.id, roll_result=final_roll)
+    db.add(bid)
+    db.commit()
+
+    return {"status": "ok", "roll": final_roll}
+
+# 4. Получение списка активных предметов раунда
+@app.get("/api/rounds/current")
+async def get_current_round(db: Session = Depends(get_db)):
+    active_round = db.query(LootRoundDB).filter(LootRoundDB.status == "active").order_by(LootRoundDB.id.desc()).first()
+    if not active_round:
+        return {"active": False}
+
+    items = db.query(ItemDB).filter(ItemDB.round_id == active_round.id).all()
+    return {
+        "active": True,
+        "round_id": active_round.id,
+        "end_time": active_round.end_time,
+        "items": items
+    }
