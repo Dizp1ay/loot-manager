@@ -135,11 +135,11 @@ async def start_cmd(message: Message):
 
 dp.include_router(router)
 
-# ==================== ТАЙМЕР ЗАВЕРШЕНИЯ РАУНДОВ И ПОДВЕДЕНИЕ ИТОГОВ ====================
+# ==================== ТАЙМЕР ЗАВЕРШЕНИЯ РАУНДОВ И ИТОГИ ====================
 
 async def check_and_finish_rounds():
     while True:
-        await asyncio.sleep(10)  # Проверка каждые 10 секунд
+        await asyncio.sleep(10)
         db = SessionLocal()
         try:
             now = datetime.utcnow()
@@ -162,7 +162,7 @@ async def check_and_finish_rounds():
                     else:
                         results_msg += f"📦 <b>{item.title}</b> — Никто не подал заявку\n"
 
-                print(results_msg)  # Лог итогов в консоль сервера
+                print(results_msg)
 
             db.commit()
         except Exception as e:
@@ -207,47 +207,4 @@ async def register_user(user_data: UserCreateSchema, db: Session = Depends(get_d
         db.add(db_user)
     db.commit()
     db.refresh(db_user)
-    return {"status": "ok", "user": {"id": db_user.id, "nickname": db_user.nickname, "class": db_user.character_class, "role": db_user.role}}
-
-@app.get("/api/users/{tg_id}")
-async def get_user(tg_id: int, db: Session = Depends(get_db)):
-    db_user = db.query(UserDB).filter(UserDB.tg_id == tg_id).first()
-    if not db_user:
-        raise HTTPException(status_code=404, detail="Пользователь не найден")
-    
-    penalties = [
-        {"id": p.id, "reason": p.reason, "amount": p.amount, "created_at": p.created_at.strftime("%Y-%m-%d %H:%M")}
-        for p in db_user.penalties
-    ]
-    total_penalties = sum(p.amount for p in db_user.penalties)
-    
-    return {
-        "tg_id": db_user.tg_id,
-        "nickname": db_user.nickname,
-        "character_class": db_user.character_class,
-        "role": db_user.role,
-        "total_penalties": total_penalties,
-        "penalties": penalties
-    }
-
-@app.get("/api/admin/promote/{tg_id}")
-async def promote_to_admin(tg_id: int, db: Session = Depends(get_db)):
-    user = db.query(UserDB).filter(UserDB.tg_id == tg_id).first()
-    if not user:
-        user = UserDB(
-            tg_id=tg_id,
-            nickname=f"Admin_{tg_id}",
-            character_class="Администратор",
-            role="admin"
-        )
-        db.add(user)
-        db.commit()
-        return {"status": "ok", "message": f"Пользователь с ID {tg_id} был создан и назначен Админом!"}
-    
-    user.role = "admin"
-    db.commit()
-    return {"status": "ok", "message": f"Пользователь {user.nickname} теперь Админ!"}
-
-@app.post("/api/penalties/add")
-async def add_penalty(data: PenaltyCreateSchema, db: Session = Depends(get_db)):
-    db_user = db.query(UserDB).filter(UserDB.tg_id
+    return {"status": "ok", "user": {"id": db_user.id, "
