@@ -7,7 +7,7 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, W
 from aiogram.filters import CommandStart
 
 BOT_TOKEN = "8752920626:AAFTkqldcmMOS1VhyI7ttaMLR2D3nmQkPc0"
-WEBAPP_URL = "https://your-cloudflare-tunnel.trycloudflare.com"
+WEBAPP_URL = "https://loot-manager-bot.onrender.com"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
