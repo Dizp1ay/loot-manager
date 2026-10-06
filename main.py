@@ -37,8 +37,8 @@ class UserDB(Base):
     tg_id = Column(Integer, unique=True, index=True, nullable=False)
     nickname = Column(String, nullable=False)
     character_class = Column(String, nullable=False)
-    role = Column(String, default="player")  # "player" или "admin"
-    
+    role = Column(String, default="player")
+
     penalties = relationship("PenaltyDB", back_populates="user")
     bids = relationship("BidDB", back_populates="user")
 
@@ -58,7 +58,7 @@ class ItemDB(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, nullable=False)
-    category = Column(String, nullable=False)  # "Экипировка", "Материалы", "Гербы"
+    category = Column(String, nullable=False)
     properties = Column(String, nullable=True)
     count = Column(Integer, default=1)
     required_class = Column(String, nullable=True)
@@ -68,7 +68,7 @@ class LootRoundDB(Base):
     __tablename__ = "loot_rounds"
 
     id = Column(Integer, primary_key=True, index=True)
-    status = Column(String, default="active")  # "active" или "finished"
+    status = Column(String, default="active")
     created_at = Column(DateTime, default=datetime.utcnow)
     end_time = Column(DateTime, nullable=False)
 
@@ -155,7 +155,10 @@ async def check_and_finish_rounds():
                 results_msg = f"<b>🏆 Итоги раунда #{rnd.id}:</b>\n\n"
 
                 for item in items:
-                    top_bid = db.query(BidDB).filter(BidDB.item_id == item.id).order_by(BidDB.roll_result.desc()).first()
+                    top_bid = db.query(BidDB).filter(
+                        BidDB.item_id == item.id
+                    ).order_by(BidDB.roll_result.desc()).first()
+                    
                     if top_bid:
                         winner = db.query(UserDB).filter(UserDB.id == top_bid.user_id).first()
                         results_msg += f"📦 <b>{item.title}</b> — Победитель: <b>{winner.nickname}</b> (Ролл: {top_bid.roll_result})\n"
@@ -207,4 +210,41 @@ async def register_user(user_data: UserCreateSchema, db: Session = Depends(get_d
         db.add(db_user)
     db.commit()
     db.refresh(db_user)
-    return {"status": "ok", "user": {"id": db_user.id, "
+    return {
+        "status": "ok",
+        "user": {
+            "id": db_user.id,
+            "nickname": db_user.nickname,
+            "class": db_user.character_class,
+            "role": db_user.role
+        }
+    }
+
+@app.get("/api/users/{tg_id}")
+async def get_user(tg_id: int, db: Session = Depends(get_db)):
+    db_user = db.query(UserDB).filter(UserDB.tg_id == tg_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    
+    penalties = [
+        {
+            "id": p.id,
+            "reason": p.reason,
+            "amount": p.amount,
+            "created_at": p.created_at.strftime("%Y-%m-%d %H:%M")
+        }
+        for p in db_user.penalties
+    ]
+    total_penalties = sum(p.amount for p in db_user.penalties)
+    
+    return {
+        "tg_id": db_user.tg_id,
+        "nickname": db_user.nickname,
+        "character_class": db_user.character_class,
+        "role": db_user.role,
+        "total_penalties": total_penalties,
+        "penalties": penalties
+    }
+
+@app.get("/api/admin/promote/{tg_id}")
+async def promote_to_admin(tg_id: int,
